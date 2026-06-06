@@ -439,6 +439,11 @@ def load_data(csv_file: str) -> pd.DataFrame:
         ["humi", "humidity"]
     )
 
+    light_col = find_column(
+        list(df.columns),
+        ["light", "lux", "illumination"]
+    )
+
     if temp_col is None:
         raise ValueError(
             f"找不到温度列，当前列名为：{list(df.columns)}"
@@ -448,10 +453,16 @@ def load_data(csv_file: str) -> pd.DataFrame:
         raise ValueError(
             f"找不到湿度列，当前列名为：{list(df.columns)}"
         )
+    
+    if light_col is None:
+        raise ValueError(
+            f"找不到光照列，当前列名为：{list(df.columns)}"
+        )
 
     rename_map = {
         temp_col: "temperature",
         humi_col: "humidity",
+        light_col: "light",
     }
 
     if time_col is not None:
@@ -469,8 +480,13 @@ def load_data(csv_file: str) -> pd.DataFrame:
         errors="coerce"
     )
 
+    df["light"] = pd.to_numeric(
+        df["light"],
+        errors="coerce"
+    )
+
     df = df.dropna(
-        subset=["temperature", "humidity"]
+        subset=["temperature", "humidity","light"]
     ).copy()
 
     if "time" in df.columns:
@@ -576,6 +592,7 @@ def call_deepseek(
 当前数据：
 - 当前温度：{latest["temperature"]:.2f}℃
 - 当前湿度：{latest["humidity"]:.2f}%
+- 当前光照：{latest["light"]:.2f} lx
 - 历史温度均值：{mean_text}
 - 当前温度偏差：{deviation_text}
 - 本地算法状态：{latest["status"]}
@@ -587,6 +604,9 @@ def call_deepseek(
 - 平均湿度：{recent_df["humidity"].mean():.2f}%
 - 最低湿度：{recent_df["humidity"].min():.2f}%
 - 最高湿度：{recent_df["humidity"].max():.2f}%
+- 平均光照：{recent_df["light"].mean():.2f} lx
+- 最低光照：{recent_df["light"].min():.2f} lx
+- 最高光照：{recent_df["light"].max():.2f} lx
 
 本地异常规则：
 当前温度偏离此前历史均值超过 ±5℃ 时判定为异常。
@@ -597,16 +617,18 @@ def call_deepseek(
 用一句话说明当前环境是否正常。
 
 ### 数据分析
-分析温度偏差、湿度状态和最近数据变化，控制在两到三句话。
+分析温度偏差、湿度状态、光照情况和最近数据变化，
+控制在两到三句话。
 
 ### 处理建议
 给出两到三条简短、具体的建议，使用编号列表。
 
 要求：
 - 使用中文；
-- 不要输出“**结论**”一类原始加粗符号；
+- 温度偏离历史均值超过 ±5℃ 时才触发本地异常规则；
+- 光照目前没有设定固定异常阈值，只能结合最近数据范围描述变化；
+- 不要因为光照高低直接判定异常；
 - 不要虚构没有提供的数据；
-- 不要把传感器数据解释为医学诊断；
 - 总长度不超过 220 字。
 """
 
@@ -747,8 +769,8 @@ if st.button(
     st.cache_data.clear()
     st.rerun()
 
-col1, col2, col3, col4 = st.columns(
-    4,
+col1, col2, col3, col4, col5 = st.columns(
+    5,
     gap="medium"
 )
 
@@ -771,12 +793,19 @@ with col2:
 
 with col3:
     metric_card(
-        title="历史温度均值",
-        value=historical_mean_text,
-        note="基于此前历史数据动态计算",
+        title="当前光照",
+        value=f"{latest['light']:.2f} lx",
+        note="BH1750 实时采集",
     )
 
 with col4:
+    metric_card(
+        title="历史温度均值",
+        value=historical_mean_text,
+        note="基于此前历史温度动态计算",
+    )
+
+with col5:
     metric_card(
         title="监测状态",
         value=status,
@@ -969,8 +998,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-temp_tab, humi_tab = st.tabs(
-    ["温度趋势", "湿度趋势"]
+temp_tab, humi_tab , light_tab = st.tabs(
+    ["温度趋势", "湿度趋势","光照趋势"]
 )
 
 with temp_tab:
@@ -1019,7 +1048,27 @@ with humi_tab:
         use_container_width=True,
     )
 
+with light_tab:
+    light_chart = recent_df[
+        [
+            "time",
+            "light",
+        ]
+    ].copy()
 
+    light_chart = light_chart.set_index("time")
+
+    light_chart = light_chart.rename(
+        columns={
+            "light": "实时光照",
+        }
+    )
+
+    st.line_chart(
+        light_chart,
+        height=330,
+        use_container_width=True,
+    )
 # =========================================================
 # 历史数据查询
 # =========================================================
@@ -1102,6 +1151,7 @@ display_df = query_df[
         "time",
         "temperature",
         "humidity",
+        "light",
         "historical_mean",
         "temperature_deviation",
         "status",
@@ -1121,6 +1171,10 @@ display_df["humidity"] = (
     display_df["humidity"].round(2)
 )
 
+display_df["light"] = (
+    display_df["light"].round(2)
+)
+
 display_df["historical_mean"] = (
     display_df["historical_mean"].round(2)
 )
@@ -1135,6 +1189,7 @@ display_df = display_df.rename(
         "time": "采集时间",
         "temperature": "温度/℃",
         "humidity": "湿度/%",
+        "light": "光照/lx",
         "historical_mean": "历史均值/℃",
         "temperature_deviation": "温度偏差/℃",
         "status": "监测状态",
