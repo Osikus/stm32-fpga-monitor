@@ -2,4 +2,4 @@ streamlit
 pandas
 pyserial
 streamlit-autorefresh
-openai
+python-dotenv
