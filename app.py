@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-
+from streamlit_autorefresh import st_autorefresh
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
@@ -14,8 +14,8 @@ from openai import OpenAI
 
 CSV_FILE = "data.csv"
 
-# 偏离历史均值超过 ±5℃ 判为异常
-TEMP_THRESHOLD = 5.0
+# 偏离历史均值超过判为异常
+DEFAULT_TEMP_THRESHOLD = 1.0
 
 # 页面刷新只负责更新实时数据，不会自动调用 DeepSeek
 PAGE_REFRESH_SECONDS = 5
@@ -413,7 +413,7 @@ def find_column(
     return None
 
 
-@st.cache_data(ttl=2)
+@st.cache_data(ttl=1)
 def load_data(csv_file: str) -> pd.DataFrame:
     """读取并清理 CSV 数据。"""
 
@@ -595,6 +595,7 @@ def call_deepseek(
 - 当前光照：{latest["light"]:.2f} lx
 - 历史温度均值：{mean_text}
 - 当前温度偏差：{deviation_text}
+- 当前异常阈值：±{TEMP_THRESHOLD:.1f}℃
 - 本地算法状态：{latest["status"]}
 
 最近 {recent_count} 条数据统计：
@@ -609,7 +610,7 @@ def call_deepseek(
 - 最高光照：{recent_df["light"].max():.2f} lx
 
 本地异常规则：
-当前温度偏离此前历史均值超过 ±5℃ 时判定为异常。
+当前温度偏离此前历史均值超过 ±{TEMP_THRESHOLD:.1f}℃ 时判定为异常。
 
 请严格按照下面的格式输出：
 
@@ -625,7 +626,7 @@ def call_deepseek(
 
 要求：
 - 使用中文；
-- 温度偏离历史均值超过 ±5℃ 时才触发本地异常规则；
+- 温度偏离历史均值超过 ±{TEMP_THRESHOLD:.1f}℃ 时才触发本地异常规则；
 - 光照目前没有设定固定异常阈值，只能结合最近数据范围描述变化；
 - 不要因为光照高低直接判定异常；
 - 不要虚构没有提供的数据；
@@ -709,7 +710,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
+if not st.session_state.get("ai_running", False):
+    st_autorefresh(
+        interval=PAGE_REFRESH_SECONDS * 1000,
+        key="data_refresh",
+    )
 # =========================================================
 # 加载数据
 # =========================================================
@@ -730,6 +735,15 @@ except Exception as exc:
 if df.empty:
     st.warning("data.csv 中还没有有效数据。")
     st.stop()
+
+TEMP_THRESHOLD = st.number_input(
+    "温度异常阈值（℃）",
+    min_value=0.1,
+    max_value=10.0,
+    value=DEFAULT_TEMP_THRESHOLD,
+    step=0.1,
+    format="%.1f",
+)
 
 df = calculate_monitoring(df)
 
@@ -811,7 +825,7 @@ with col5:
         value=status,
         note=(
             f"异常阈值：历史均值 ±"
-            f"{TEMP_THRESHOLD:.0f}℃"
+            f"{TEMP_THRESHOLD:.1f}℃"
         ),
         value_class=status_class,
     )
@@ -882,18 +896,22 @@ with ai_right:
 
 # 点击后调用 DeepSeek
 if analyze_button:
-    # 先清除上次错误
     st.session_state["ai_error"] = ""
+    st.session_state["ai_running"] = True
 
     if not DEEPSEEK_API_KEY:
         st.session_state["ai_error"] = (
             "没有检测到 API Key。请检查 .env 文件中的 "
             "DEEPSEEK_API_KEY。"
         )
+        st.session_state["ai_running"] = False
+        st.rerun()
 
     else:
         try:
-            with st.spinner("DeepSeek 正在分析监测数据，请稍候……"):
+            with st.spinner(
+                "DeepSeek 正在分析监测数据，请稍候……"
+            ):
                 result = call_deepseek(
                     latest=latest,
                     recent_df=recent_df,
@@ -903,16 +921,16 @@ if analyze_button:
             st.session_state["ai_time"] = datetime.now()
             st.session_state["ai_error"] = ""
 
-            # 明确重新绘制页面，显示刚保存的结果
-            st.rerun()
-
         except Exception as exc:
             st.session_state["ai_result"] = ""
             st.session_state["ai_error"] = (
                 f"{type(exc).__name__}: {exc}"
             )
 
-            st.rerun()
+        finally:
+            st.session_state["ai_running"] = False
+
+        st.rerun()
 
 
 # 显示错误
@@ -957,26 +975,6 @@ else:
 
 
 
-if analyze_button:
-    if not DEEPSEEK_API_KEY:
-        st.error(
-            "没有检测到 API Key。请在 .env 中填写："
-            "DEEPSEEK_API_KEY=你的密钥"
-        )
-    else:
-        try:
-            with st.spinner("DeepSeek 正在分析监测数据……"):
-                ai_result = call_deepseek(
-                    latest=latest,
-                    recent_df=recent_df,
-                )
-
-            st.session_state["ai_result"] = ai_result
-            st.session_state["ai_time"] = datetime.now()
-            st.session_state["ai_error"] = ""
-
-        except Exception as exc:
-            st.session_state["ai_error"] = str(exc)
 
 
 if st.session_state.get("ai_error"):
